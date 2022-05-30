@@ -152,7 +152,9 @@ def run(model: tf.keras.Model, norm_param):
                 rec.append(
                     (time, hralt, theta, alpha, cas, elv, throttle)
                 )
-
+                print("%1f s, Alti: %2f, Att: (%4f, %4f) CAS:%2f Elevator:%2f Throttle:%2f"\
+                        % (time, hralt, theta, alpha, cas, elv, throttle),
+                        end='\r')
 
                 # Send back data to x plane
                 time += INTERVAL
