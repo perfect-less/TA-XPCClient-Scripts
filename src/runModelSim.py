@@ -2,16 +2,14 @@
 to our defined initial flight condition (altitude, attitude, velocity
 , etc.)"""
 
-import os
-import sys
+
 import datetime
 
 from time import sleep
-from math import pi, sin, cos, atan2, sqrt
+from math import sin, cos
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import label_ranking_average_precision_score
 import tensorflow as tf
 
 import xpc
