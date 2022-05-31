@@ -24,12 +24,12 @@ from normalization import DF_Nomalize, denorm, _norm
 
 # flight_31077
 INTERVAL = 1 # Seconds
-AIRPORT_ELEVATION = 130 # 101.89464 # m
+AIRPORT_ELEVATION = 100.279 # 101.89464 # m
 AIRPORT_LAT = 35.01619097009047 # Deg
 AIRPORT_LON = -89.97187689049355 # Deg
 
-ELV_MIN = -20 * deg2rad
-ELV_MAX = 10  * deg2rad
+ELV_MIN = -20
+ELV_MAX = 10
 THROTTLE_DIVIDER = 100
 
 FEATURE_WINDOW_WIDTH = 5
@@ -40,14 +40,10 @@ THRESHOLD_DIST = 10 # km
 FINAL_HEIGHT = 30 # m
 
 # Initial Cond.
-LONGITUDE_0 = -89.97034510928668 # Deg
-LATITUDE_0  = 34.90031746597267 # Deg
-ALTITUDE_0  = 540 + AIRPORT_ELEVATION # m
+THETA_0 = 0.6262 # Deg
+GLIDE_SLOPE = -3.0 # Deg
 
-THETA_0 = 3.3397455223670303 # Deg
-TRUE_HEADING_0 = 0 # Deg 0.09416212074411674
-
-GROUND_SPEED_0 = 80.5 # mps
+GROUND_SPEED_0 = 56.52 # mps
 THROTTLE_0 = .6 # [0-1]
 
 def Elv2LonStick(elv_def_deg: float) -> float:
@@ -61,9 +57,16 @@ def Elv2LonStick(elv_def_deg: float) -> float:
 def run(model: tf.keras.Model, norm_param):
 
     lastUpdate = datetime.datetime.now()
+    on_model = False
+
+    # Initial Setup
+
+    time = 0
+    last_height = 9999
+    rec = []
 
     print ("Begin establishing connection with X Plane")
-    with xpc.XPlaneConnect() as client:
+    with xpc.XPlaneConnect(timeout=10000) as client:
         # Verify connection
         try:
             # If X-Plane does not respond to the request, a timeout error
@@ -78,39 +81,29 @@ def run(model: tf.keras.Model, norm_param):
         print("Pausing")
         client.pauseSim(True)
 
-        # Initial Setup
-
-        time = 0
-        last_height = 9999
-        rec = []
-
-        # Set aircraft initial position
-        print("Setting position")
-        #       Lat         Lon          Alt         Pitch Roll True_Heading    Gear
-        posi_init = [-998, -998, -998, THETA_0,    0,   TRUE_HEADING_0, 0]
-        client.sendPOSI(posi_init)
-
         # Set initial control
         #       Lat Lon Alt Throttle    Gear Flaps
-        ctrl_init = [0,  0,  0,  THROTTLE_0, 0,   0]
+        ctrl_init = [0,  0,  0,  THROTTLE_0, 0,   1]
         client.sendCTRL(ctrl_init)
 
         # Set Data [EXAMPLE] Setting x plane param
         drefs_init = [
                     'sim/flightmodel/position/local_vy', # mps
-                    'sim/flightmodel/position/local_vz'
+                    'sim/flightmodel/position/local_vz',
+                    'sim/flightmodel/position/theta'
 
                 ]
         init_cond = [
-                    [-sin(THETA_0*deg2rad) * GROUND_SPEED_0],
-                    [ cos(THETA_0*deg2rad) * GROUND_SPEED_0]
+                    -sin((THETA_0-GLIDE_SLOPE)*deg2rad) * GROUND_SPEED_0,
+                     cos((THETA_0-GLIDE_SLOPE)*deg2rad) * GROUND_SPEED_0,
+                    THETA_0
                 ]
         client.sendDREFs(drefs_init, init_cond)
 
         # Toggle pause state to resume
         print("Resuming")
         client.pauseSim(False)
-        
+
         lastUpdate = datetime.datetime.now()
         sleep(1)
 
@@ -127,7 +120,8 @@ def run(model: tf.keras.Model, norm_param):
                             'sim/flightmodel/position/true_airspeed',                           # mps
                         #    'sim/cockpit2/gauges/indicators/calibrated_airspeed_kts_pilot',     # Knots
                         #    'sim/cockpit2/gauges/indicators/radio_altimeter_height_ft_pilot',   # Feet
-                            'sim/flightmodel/controls/elv1_def'                                 # Deg
+                        #    'sim/flightmodel/controls/elv1_def'                                 # Deg
+                            'sim/flightmodel2/wing/elevator1_deg'
                         ]
                 dref_values = client.getDREFs(drefs_get)
 
@@ -142,9 +136,9 @@ def run(model: tf.keras.Model, norm_param):
 
                 alpha = dref_values[0][0] * deg2rad   # Rad
                 theta = dref_values[1][0] * deg2rad   # Rad
-                hralt = posi[2] * 0.3048    # m
+                hralt = posi[2] -  AIRPORT_ELEVATION #* 0.3048 -    # m
                 cas = dref_values[2][0] #*0.514444    # mps
-                elv = dref_values[3][0] * deg2rad     # Rad
+                elv = dref_values[3][8] * deg2rad     # Rad
                 throttle = ctrl[3]
 
                 # Record data
@@ -157,10 +151,12 @@ def run(model: tf.keras.Model, norm_param):
 
                 # Send back data to x plane
                 time += INTERVAL
-                if dist >= THRESHOLD_DIST or len (rec) < FEATURE_WINDOW_WIDTH:
+                if not on_model and (dist >= THRESHOLD_DIST or len (rec) < FEATURE_WINDOW_WIDTH):
                     lastUpdate = datetime.datetime.now()
                     continue
-
+                else:
+                    on_model = True
+                # continue
                 #
                 #
                 feat_list = []
@@ -181,20 +177,20 @@ def run(model: tf.keras.Model, norm_param):
                 label = model(feature).numpy()
 
                 # Denormalized the labels
-                label_send = (label[0, 0, 0], label[0, 0, 1])
+                label_send = [label[0, 0, 0], label[0, 0, 1]]
 
                 for i, _value in enumerate(label_send):
                     label_send[i] = denorm(_value,
                                             norm_param[SEQUENTIAL_LABELS[i]][0],
                                             norm_param[SEQUENTIAL_LABELS[i]][1]
                                         )
-                elv_send, throttle_send = label_send
+                elv_send, throttle_send = label_send[0], label_send[1]
 
-                elv_send = Elv2LonStick(elv_send * rad2deg )
+                elv_send = Elv2LonStick(elv_send * rad2deg)
                 throttle_send = throttle_send / THROTTLE_DIVIDER
 
                 # Send labels to x plane
-                ctrl_send = [-998, elv_send, -998, throttle_send, -998, -998]
+                ctrl_send = [elv_send, 0, -998, throttle_send, -998, -998]
                 client.sendCTRL(ctrl_send)
 
                 last_height = hralt
