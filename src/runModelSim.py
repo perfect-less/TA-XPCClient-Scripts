@@ -24,7 +24,7 @@ from normalization import DF_Nomalize, denorm, _norm
 
 # flight_31077
 INTERVAL = 1 # Seconds
-AIRPORT_ELEVATION = 101.89464 # m
+AIRPORT_ELEVATION = 130 # 101.89464 # m
 AIRPORT_LAT = 35.01619097009047 # Deg
 AIRPORT_LON = -89.97187689049355 # Deg
 
@@ -74,6 +74,9 @@ def run(model: tf.keras.Model, norm_param):
             print("Exiting...")
             return
 
+        # Pause the sim
+        print("Pausing")
+        client.pauseSim(True)
 
         # Initial Setup
 
@@ -84,7 +87,7 @@ def run(model: tf.keras.Model, norm_param):
         # Set aircraft initial position
         print("Setting position")
         #       Lat         Lon          Alt         Pitch Roll True_Heading    Gear
-        posi_init = [LATITUDE_0, LONGITUDE_0, ALTITUDE_0, 0,    0,   TRUE_HEADING_0, 0]
+        posi_init = [-998, -998, -998, THETA_0,    0,   TRUE_HEADING_0, 0]
         client.sendPOSI(posi_init)
 
         # Set initial control
@@ -95,7 +98,7 @@ def run(model: tf.keras.Model, norm_param):
         # Set Data [EXAMPLE] Setting x plane param
         drefs_init = [
                     'sim/flightmodel/position/local_vy', # mps
-                    'sim/flightmodel/position/local_vz',
+                    'sim/flightmodel/position/local_vz'
 
                 ]
         init_cond = [
@@ -104,15 +107,12 @@ def run(model: tf.keras.Model, norm_param):
                 ]
         client.sendDREFs(drefs_init, init_cond)
 
-
-        # Pause the sim
-        print("Pausing")
-        client.pauseSim(True)
-        sleep(2)
-
         # Toggle pause state to resume
         print("Resuming")
         client.pauseSim(False)
+        
+        lastUpdate = datetime.datetime.now()
+        sleep(1)
 
 
         # Control Loop
@@ -124,8 +124,9 @@ def run(model: tf.keras.Model, norm_param):
                 drefs_get = [
                             'sim/flightmodel/position/alpha',                                   # Deg
                             'sim/flightmodel/position/theta',                                   # Deg
-                            'sim/cockpit2/gauges/indicators/calibrated_airspeed_kts_pilot',     # Knots
-                            'sim/cockpit2/gauges/indicators/radio_altimeter_height_ft_pilot',   # Feet
+                            'sim/flightmodel/position/true_airspeed',                           # mps
+                        #    'sim/cockpit2/gauges/indicators/calibrated_airspeed_kts_pilot',     # Knots
+                        #    'sim/cockpit2/gauges/indicators/radio_altimeter_height_ft_pilot',   # Feet
                             'sim/flightmodel/controls/elv1_def'                                 # Deg
                         ]
                 dref_values = client.getDREFs(drefs_get)
@@ -141,9 +142,9 @@ def run(model: tf.keras.Model, norm_param):
 
                 alpha = dref_values[0][0] * deg2rad   # Rad
                 theta = dref_values[1][0] * deg2rad   # Rad
-                hralt = dref_values[3][0] * 0.3048    # m
-                cas = dref_values[2][0] * 0.514444    # mps
-                elv = dref_values[4][0] * deg2rad     # Rad
+                hralt = posi[2] * 0.3048    # m
+                cas = dref_values[2][0] #*0.514444    # mps
+                elv = dref_values[3][0] * deg2rad     # Rad
                 throttle = ctrl[3]
 
                 # Record data
@@ -156,7 +157,7 @@ def run(model: tf.keras.Model, norm_param):
 
                 # Send back data to x plane
                 time += INTERVAL
-                if dist >= THRESHOLD_DIST:
+                if dist >= THRESHOLD_DIST or len (rec) < FEATURE_WINDOW_WIDTH:
                     lastUpdate = datetime.datetime.now()
                     continue
 
@@ -176,11 +177,11 @@ def run(model: tf.keras.Model, norm_param):
                     feat_list.append(_feat)
 
                 # Turn it into array and pass it to model
-                feature = np.array(feat_list)
-                label = model(feature)
+                feature = np.expand_dims (np.array(feat_list), axis=0)
+                label = model(feature).numpy()
 
                 # Denormalized the labels
-                label_send = (label[0, 0], label[0, 1])
+                label_send = (label[0, 0, 0], label[0, 0, 1])
 
                 for i, _value in enumerate(label_send):
                     label_send[i] = denorm(_value,
